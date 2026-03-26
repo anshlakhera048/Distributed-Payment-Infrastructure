@@ -1,0 +1,31 @@
+# ── Python ────────────────────────────────────────────────
+fraud-service/venv/
+fraud-service/__pycache__/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.env
+
+# ── Java / Maven ──────────────────────────────────────────
+payment-service/target/
+payment-service/HELP.md
+payment-service/.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# ── IDEs ──────────────────────────────────────────────────
+.idea/
+*.iws
+*.iml
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+.springBeans
+.sts4-cache
+
+# ── OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
