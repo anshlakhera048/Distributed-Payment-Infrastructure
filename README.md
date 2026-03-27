@@ -17,6 +17,7 @@ A production-grade distributed payments platform demonstrating event-driven micr
 9. [Load Testing Guide](#9-load-testing-guide)
 10. [Observability](#10-observability)
 11. [Troubleshooting](#11-troubleshooting)
+12. [Frontend Dashboard](#12-frontend-dashboard)
 
 ---
 
@@ -185,6 +186,7 @@ This system implements a complete payment processing pipeline:
 | 6379 | Redis |
 | 9090 | Prometheus |
 | 3000 | Grafana |
+| 3000+ | Frontend Dashboard (Vite dev server — auto-picks available port) |
 
 ---
 
@@ -1214,6 +1216,62 @@ docker compose logs payment-service | grep "Reconciliation"
 |----------|------------|-----------------|
 | INTERNAL | N/A | `kafka:9092` |
 | EXTERNAL | `localhost:29092` | N/A |
+
+---
+
+## 12. Frontend Dashboard
+
+A real-time system visualization dashboard built with React, TypeScript, Tailwind CSS, and native WebSocket.
+
+### Quick Start
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server starts on an available port (default 3000, auto-increments if Grafana is running). API calls proxy to the gateway at `localhost:8090`.
+
+### What It Shows
+
+| Panel | Description |
+|---|---|
+| **Metrics Bar** | Total, Success, Pending, Failed, Fraud counts + success rate — derived from stored events, always accurate |
+| **Live Payment Stream** | Real-time table of every event via WebSocket (paymentId, userId, amount, status, event type, timestamp) |
+| **System Status** | Green/red indicators for API Gateway health and WebSocket connectivity, last event timestamp |
+| **Create Payment** | Form to submit payments (amount, currency, idempotency key) with instant response display |
+| **Event Stream** | Kafka-style timeline: `payment.created` → `fraud.result` → `payment.processed` |
+| **Alerts & Fraud** | Fraud rejections and failed payment alerts |
+
+### Simulation Controls
+
+- **↻ Duplicate Request** — Resends with the same idempotency key to demonstrate exactly-once semantics
+- **⚡ Burst (5 rapid)** — Fires 5 concurrent payments to test parallel processing and rate limiting
+- **XYZ currency** — Select from the currency dropdown to trigger fraud detection (unsupported currency rule)
+- **Amount > $10,000** — Triggers the fraud amount-threshold rule
+
+### Data Persistence
+
+Events and alerts are stored in `sessionStorage`. Refreshing the page restores all data. Metrics are computed from stored events (not incremental counters), so they are always accurate after refresh.
+
+### Architecture
+
+```
+Browser ──► Vite Dev Server (:3000)
+             ├─ /api/* ──proxy──► API Gateway (:8090) ──► Payment Service (:8080)
+             └─ ws://localhost:8080/ws/payments (direct WebSocket)
+```
+
+### Tech Stack
+
+- React 19 + TypeScript (Vite 6)
+- Tailwind CSS 4
+- Axios (HTTP client with JWT auth)
+- Native WebSocket (auto-reconnect, ping/pong keepalive)
+- No heavy state libraries — `useState` + `useMemo` + `sessionStorage`
+
+For full usage instructions, see [`frontend/README.md`](frontend/README.md).
 
 ---
 

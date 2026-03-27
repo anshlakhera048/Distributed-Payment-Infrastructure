@@ -374,11 +374,11 @@ def _run_fraud_decision(
 
     # Stage 2: ML
     score = ml_score(amount, currency)
-    ml_fraud = score >= 0.75
+    ml_fraud = bool(score >= 0.75)
     return dict(event_id=event_id, payment_id=payment_id,
                 fraud=ml_fraud,
                 reason="ml_high_risk_score" if ml_fraud else "ok",
-                score=score,
+                score=float(score),
                 stage="combined" if ml_fraud else "ml",
                 fallback=False, correlation_id=correlation_id)
 
