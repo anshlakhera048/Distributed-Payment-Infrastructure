@@ -1,0 +1,42 @@
+<configuration>
+
+    <!-- ================================================================
+         Console Appender — JSON structured logs via logstash-logback-encoder.
+         LogstashEncoder automatically includes:
+           timestamp, level, logger, thread, message, mdc (all keys), stackTrace
+         All MDC fields (correlationId, requestId, serviceName, paymentId) appear
+         in every log line automatically — no extra configuration needed.
+    ================================================================ -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</timestampPattern>
+            <timeZone>UTC</timeZone>
+            <customFields>{"service":"payment-service"}</customFields>
+            <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                <maxDepthPerCause>10</maxDepthPerCause>
+                <shortenedClassNameLength>20</shortenedClassNameLength>
+            </throwableConverter>
+        </encoder>
+    </appender>
+
+    <!-- ================================================================
+         Root logger
+    ================================================================ -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Application-level debug logging -->
+    <logger name="com.payments" level="DEBUG" additivity="false">
+        <appender-ref ref="CONSOLE"/>
+    </logger>
+
+    <!-- Suppress noisy libraries -->
+    <logger name="org.springframework.kafka" level="WARN"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="WARN"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="io.lettuce" level="WARN"/>
+    <logger name="reactor.netty" level="WARN"/>
+
+</configuration>

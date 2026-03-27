@@ -1,3 +1,6 @@
+server:
+  port: 0
+
 spring:
   datasource:
     url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
@@ -11,5 +14,50 @@ spring:
     database-platform: org.hibernate.dialect.H2Dialect
     show-sql: false
 
+  kafka:
+    bootstrap-servers: localhost:9092
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
   autoconfigure:
-    exclude: org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+
+app:
+  fraud-service:
+    base-url: http://localhost:8000
+    timeout-seconds: 5
+    max-retries: 2
+  outbox:
+    polling-interval-ms: 30000
+    max-batch-size: 50
+    max-retries: 3
+  rate-limiting:
+    requests-per-minute: 1000
+    enabled: false
+  webhook:
+    delivery-timeout-seconds: 10
+    max-retry-attempts: 5
+    initial-backoff-seconds: 5
+  reconciliation:
+    cron: "0 0 3 * * *"
+    stale-payment-threshold-minutes: 10
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      fraudService:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+  timelimiter:
+    instances:
+      fraudService:
+        timeoutDuration: 5s
+
+

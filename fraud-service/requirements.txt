@@ -1,3 +1,8 @@
-fastapi==0.135.2
-uvicorn==0.42.0
-pydantic==2.12.5
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.8.2
+scikit-learn==1.5.1
+numpy==1.26.4
+redis==5.0.8
+prometheus-client==0.20.0
+confluent-kafka==2.5.0

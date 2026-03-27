@@ -6,39 +6,132 @@ spring:
     enabled: false
 
   datasource:
-    url: jdbc:postgresql://localhost:5433/payments
-    username: user
-    password: pass
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/payments}
+    username: ${SPRING_DATASOURCE_USERNAME:user}
+    password: ${SPRING_DATASOURCE_PASSWORD:pass}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      connection-test-query: SELECT 1
 
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     open-in-view: false
     properties:
       hibernate:
-        "[format_sql]": true
+        "[format_sql]": false
+        "[jdbc.batch_size]": 50
+        order_inserts: true
+        order_updates: true
 
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
     listener:
       ack-mode: manual
+      concurrency: 3
     consumer:
-      group-id: payment-group
+      group-id: payment-processor-group
       auto-offset-reset: earliest
       enable-auto-commit: false
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 50
       properties:
-        "[spring.json.trusted.packages]": "com.payments.payment_service.entity"
-        "[spring.json.value.default.type]": "com.payments.payment_service.entity.Payment"
+        "[fetch.min.bytes]": 1024
+        "[fetch.max.wait.ms]": 500
     producer:
       acks: all
-      retries: 3
+      retries: 5
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        "[enable.idempotence]": true
+        "[max.in.flight.requests.per.connection]": 1
+        "[linger.ms]": 5
+        "[batch.size]": 32768
+
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+          max-wait: 1000ms
+
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: payment-service
+      environment: local
+
+# Application-specific configuration
+app:
+  fraud-service:
+    base-url: ${FRAUD_SERVICE_URL:http://localhost:8000}
+    timeout-seconds: 5
+    max-retries: 2
+  outbox:
+    polling-interval-ms: 1000
+    max-batch-size: 50
+    max-retries: 3
+  rate-limiting:
+    requests-per-minute: 100
+    enabled: true
+  webhook:
+    delivery-timeout-seconds: 10
+    max-retry-attempts: 5
+    initial-backoff-seconds: 5
+  reconciliation:
+    cron: "0 0/30 * * * *"
+    stale-payment-threshold-minutes: 10
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      fraudService:
+        registerHealthIndicator: true
+        slidingWindowType: COUNT_BASED
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+  timelimiter:
+    instances:
+      fraudService:
+        timeoutDuration: 5s
+        cancelRunningFuture: true
 
 logging:
   level:
     root: INFO
+    com.payments: DEBUG
+    org.springframework.kafka: WARN
+    org.hibernate.SQL: WARN
