@@ -31,6 +31,7 @@ services:
     container_name: payments-kafka
     depends_on:
       - zookeeper
+    restart: on-failure
     ports:
       - "29092:29092"   # External (host) access on 29092; containers use INTERNAL://kafka:9092
     environment:
@@ -72,6 +73,7 @@ services:
       context: ./fraud-service
       dockerfile: Dockerfile
     container_name: payments-fraud-service
+    profiles: ["app", "full"]
     ports:
       - "8000:8000"
     environment:
@@ -92,6 +94,7 @@ services:
       context: ./payment-service
       dockerfile: Dockerfile
     container_name: payments-payment-service
+    profiles: ["app", "full"]
     ports:
       - "8080:8080"
     environment:
@@ -123,6 +126,7 @@ services:
       context: ./api-gateway
       dockerfile: Dockerfile
     container_name: payments-api-gateway
+    profiles: ["app", "full"]
     ports:
       - "8090:8090"
     environment:

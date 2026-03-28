@@ -17,26 +17,96 @@ Client → API Gateway (JWT, rate limit) → Payment Service (Spring Boot)
 
 ## Quick Start
 
-```bash
-docker compose up --build     # Start all services (~2-4 min first build)
-docker compose ps             # Verify healthy status (~60-90s)
-```
+### Option A — Docker Only (simplest)
 
-Create a test payment:
+Run everything in Docker. No local Java/Python/Node needed.
 
 ```bash
-curl -s -X POST http://localhost:8080/payments \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: test-001" \
-  -d '{
-    "userId": "550e8400-e29b-41d4-a716-446655440000",
-    "merchantId": "660e8400-e29b-41d4-a716-446655440000",
-    "amount": 49.99,
-    "currency": "USD"
-  }' | python -m json.tool
+# From project root (payments-system/)
+docker-compose --profile full up -d          # Start all services (~2-4 min first build)
+docker-compose --profile full ps             # Verify healthy status (~60-90s)
 ```
 
-Frontend dashboard: `cd frontend && npm install && npm run dev`
+| # | Service | URL |
+|---|---------|-----|
+| 1 | PostgreSQL | `localhost:5433` |
+| 2 | Redis | `localhost:6379` |
+| 3 | Kafka | `localhost:29092` |
+| 4 | Fraud Service | http://localhost:8000 |
+| 5 | Payment Service | http://localhost:8080 |
+| 6 | API Gateway | http://localhost:8090 |
+| 7 | Prometheus | http://localhost:9090 |
+| 8 | Grafana | http://localhost:3000 (admin/admin) |
+
+Frontend: `cd frontend && npm install && npm run dev` → http://localhost:5173
+
+To stop:
+```bash
+docker-compose --profile full down            # Stop all, keep data
+docker-compose --profile full down -v         # Stop all + delete volumes (clean reset)
+```
+
+### Option B — Local Dev (hot-reload for app services)
+
+Infrastructure runs in Docker, app services run locally for fast iteration.
+
+**Prerequisites:** Java 17+, Python 3.11+, Node 18+, Maven
+
+**Step 1 — Start infrastructure (one terminal, from project root):**
+```bash
+docker-compose up -d                          # Starts only: postgres, redis, kafka, zookeeper, prometheus, grafana
+```
+
+**Step 2 — Start Fraud Service (new terminal):**
+```bash
+cd fraud-service
+
+# Activate virtual environment:
+#   Windows PowerShell:
+.\venv\Scripts\Activate.ps1
+#   Linux/macOS:
+#   source venv/bin/activate
+
+pip install -r requirements.txt
+
+# Set environment variables:
+#   Windows PowerShell:
+$env:REDIS_URL="redis://localhost:6379"; $env:KAFKA_BOOTSTRAP_SERVERS="localhost:29092"; $env:KAFKA_ENABLED="true"
+#   Linux/macOS:
+#   export REDIS_URL=redis://localhost:6379 KAFKA_BOOTSTRAP_SERVERS=localhost:29092 KAFKA_ENABLED=true
+
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+**Step 3 — Start Payment Service (new terminal):**
+```bash
+cd payment-service
+mvn spring-boot:run
+```
+
+**Step 4 — Start API Gateway (new terminal):**
+```bash
+cd api-gateway
+mvn spring-boot:run
+```
+
+**Step 5 — Start Frontend (new terminal):**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+> **Port conflict?** If you see "Port already in use", either a Docker container or a previous local process is occupying the port. Run `netstat -ano | findstr :<PORT>` (Windows) or `lsof -i :<PORT>` (macOS/Linux) to find the PID and kill it.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Kafka `NodeExistsException` on startup | Stale ZooKeeper data. Run `docker-compose down -v` then start again |
+| Port already in use | Kill the conflicting process (see note above) or stop Docker app containers |
+| `scikit-learn` or `confluent-kafka` fails to install | Requires Python 3.11+; on Python 3.13+ the versions in `requirements.txt` are already updated |
+| Grafana occupies port 3000 | Frontend uses port 5173 to avoid conflict |
 
 ## Documentation
 
