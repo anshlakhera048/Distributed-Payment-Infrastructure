@@ -2,8 +2,8 @@ package com.payments.payment_service.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
-import org.hibernate.validator.constraints.URL;
 
 import java.util.UUID;
 
@@ -14,7 +14,10 @@ public class RegisterWebhookRequest {
     private UUID merchantId;
 
     @NotBlank(message = "url is required")
-    @URL(message = "url must be a valid HTTP/HTTPS URL")
+    @Pattern(
+        regexp = "^https://[a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?)+(/.*)?$",
+        message = "url must be a valid HTTPS URL with a public domain"
+    )
     private String url;
 
     /**

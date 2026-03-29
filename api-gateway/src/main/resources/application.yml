@@ -24,8 +24,36 @@ spring:
 
       routes:
         # ----------------------------------------------------------------
-        # Payment Service routes
+        # Payment Service routes — v1 API (versioned)
         # ----------------------------------------------------------------
+        - id: payment-service-api-v1
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8080}
+          predicates:
+            - Path=/v1/payments/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@remoteAddrKeyResolver}"
+            - name: Retry
+              args:
+                retries: 3
+                statuses: BAD_GATEWAY,SERVICE_UNAVAILABLE,GATEWAY_TIMEOUT
+                methods: GET
+                backoff:
+                  firstBackoff: 100ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+            - name: CircuitBreaker
+              args:
+                name: payment-service-cb
+                fallbackUri: forward:/fallback/payment-service
+
+        # Legacy unversioned route (backward compatibility)
         - id: payment-service-api
           uri: ${PAYMENT_SERVICE_URL:http://localhost:8080}
           predicates:
@@ -65,6 +93,42 @@ spring:
             - Path=/management/**
           filters:
             - StripPrefix=0
+
+        # ----------------------------------------------------------------
+        # Webhook registration routes
+        # ----------------------------------------------------------------
+        - id: webhook-api
+          uri: ${PAYMENT_SERVICE_URL:http://localhost:8080}
+          predicates:
+            - Path=/api/webhooks/**
+          filters:
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@remoteAddrKeyResolver}"
+
+      # Global CORS configuration
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins:
+              - "http://localhost:5173"
+              - "http://localhost:3000"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - OPTIONS
+            allowedHeaders:
+              - "*"
+            exposedHeaders:
+              - X-Correlation-ID
+            allowCredentials: true
+            maxAge: 3600
 
 # ----------------------------------------------------------------
 # JWT — symmetric HS256 key

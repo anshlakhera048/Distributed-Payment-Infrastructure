@@ -50,14 +50,15 @@ export function CreatePaymentForm() {
   };
 
   const handleDuplicate = async () => {
-    // Re-send with the SAME idempotency key to test idempotency
+    // Re-send with the SAME idempotency key to test idempotency.
+    // Uses the last successful response's userId/merchantId to ensure
+    // the duplicate payload matches exactly (idempotency key is the dedup mechanism).
     setError(null);
-    setResponse(null);
     setLoading(true);
     try {
       const request: CreatePaymentRequest = {
-        userId: form.userId || generateUUID(),
-        merchantId: form.merchantId || generateUUID(),
+        userId: response?.userId || form.userId || generateUUID(),
+        merchantId: response?.merchantId || form.merchantId || generateUUID(),
         amount: parseFloat(form.amount) || 100,
         currency: form.currency,
       };

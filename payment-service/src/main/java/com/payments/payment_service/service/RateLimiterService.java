@@ -79,19 +79,26 @@ public class RateLimiterService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final boolean rateLimitingEnabled;
     private final int requestsPerMinute;
+    private final BackpressureService backpressureService;
 
     public RateLimiterService(
         @Qualifier("redisTemplate") RedisTemplate<String, Object> redisTemplate,
         @Value("${app.rate-limiting.enabled}") boolean rateLimitingEnabled,
-        @Value("${app.rate-limiting.requests-per-minute}") int requestsPerMinute
+        @Value("${app.rate-limiting.requests-per-minute}") int requestsPerMinute,
+        BackpressureService backpressureService
     ) {
         this.redisTemplate = redisTemplate;
         this.rateLimitingEnabled = rateLimitingEnabled;
         this.requestsPerMinute = requestsPerMinute;
+        this.backpressureService = backpressureService;
     }
 
     /**
      * Checks the rate limit for the given userId.
+     * Applies adaptive throttling based on Kafka consumer lag:
+     *   - Normal: full requestsPerMinute
+     *   - Critical lag: 50% of requestsPerMinute
+     *   - Severe lag: 10% of requestsPerMinute
      * Tries Redis first; falls back to in-memory on any Redis failure.
      * Throws {@link RateLimitExceededException} if the limit is exceeded.
      */
@@ -107,11 +114,23 @@ public class RateLimiterService {
                 e.getMessage(), userId);
             checkInMemoryRateLimit(userId);
         } catch (RuntimeException e) {
-            // Catch other Redis transient failures (timeout, serialization, cluster failover)
             log.warn("Redis rate limit check failed ({}), using in-memory fallback for userId={}",
                 e.getClass().getSimpleName(), userId);
             checkInMemoryRateLimit(userId);
         }
+    }
+
+    /**
+     * Returns the effective rate limit after applying backpressure multiplier.
+     */
+    private int getEffectiveRateLimit() {
+        double multiplier = backpressureService.getRateLimitMultiplier();
+        int effective = Math.max(1, (int) (requestsPerMinute * multiplier));
+        if (multiplier < 1.0) {
+            log.debug("Adaptive rate limit active: base={} multiplier={} effective={}",
+                requestsPerMinute, multiplier, effective);
+        }
+        return effective;
     }
 
     /**
@@ -121,16 +140,17 @@ public class RateLimiterService {
         String key = RATE_LIMIT_PREFIX + userId.toString();
         DefaultRedisScript<Long> script = new DefaultRedisScript<>(RATE_LIMIT_SCRIPT, Long.class);
         List<String> keys = Collections.singletonList(key);
+        int effectiveLimit = getEffectiveRateLimit();
 
         Long result = redisTemplate.execute(script, keys,
-            String.valueOf(requestsPerMinute),
+            String.valueOf(effectiveLimit),
             "60"
         );
 
         if (result == null || result == 0L) {
-            log.warn("Rate limit exceeded (Redis) for userId={}", userId);
+            log.warn("Rate limit exceeded (Redis) for userId={} effectiveLimit={}", userId, effectiveLimit);
             throw new RateLimitExceededException(
-                "Rate limit exceeded. Max " + requestsPerMinute + " requests per minute."
+                "Rate limit exceeded. Max " + effectiveLimit + " requests per minute."
             );
         }
     }
@@ -147,21 +167,21 @@ public class RateLimiterService {
     private void checkInMemoryRateLimit(UUID userId) {
         String key = userId.toString();
         long now = System.currentTimeMillis();
+        int effectiveLimit = getEffectiveRateLimit();
 
-        // long[0] = count, long[1] = window start epoch ms
-        // Caffeine's compute is atomic; the lambda runs under a per-key lock.
         long[] state = inMemoryCounters.asMap().compute(key, (k, existing) -> {
             if (existing == null || now - existing[1] >= WINDOW_MS) {
-                return new long[]{1L, now}; // new window
+                return new long[]{1L, now};
             }
             existing[0]++;
             return existing;
         });
 
-        if (state[0] > requestsPerMinute) {
-            log.warn("Rate limit exceeded (in-memory fallback) for userId={} count={}", userId, state[0]);
+        if (state[0] > effectiveLimit) {
+            log.warn("Rate limit exceeded (in-memory fallback) for userId={} count={} effectiveLimit={}",
+                userId, state[0], effectiveLimit);
             throw new RateLimitExceededException(
-                "Rate limit exceeded. Max " + requestsPerMinute + " requests per minute."
+                "Rate limit exceeded. Max " + effectiveLimit + " requests per minute."
             );
         }
     }

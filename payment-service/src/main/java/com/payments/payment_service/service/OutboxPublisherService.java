@@ -41,6 +41,9 @@ public class OutboxPublisherService {
     @Value("${app.outbox.max-retries}")
     private int maxRetries;
 
+    @Value("${app.kafka.partition-salt-factor:3}")
+    private int partitionSaltFactor;
+
     public OutboxPublisherService(
         OutboxEventRepository outboxEventRepository,
         KafkaTemplate<String, String> kafkaTemplate,
@@ -85,13 +88,14 @@ public class OutboxPublisherService {
                 // (x-event-id, x-correlation-id, x-trace-id) across all producers.
                 RecordHeaders headers = KafkaHeaderUtil.buildHeaders(eventId, correlationId, traceId);
 
-                // Partition key strategy: use partitionKey field (userId) if set, else aggregateId (paymentId).
-                // userId partitioning: co-locates all events for a user on the same partition,
-                // enabling sequential per-user processing and velocity tracking without coordination.
-                // See KafkaConfig and README for hot-user mitigation strategy.
-                String partitionKey = event.getPartitionKey() != null
-                    ? event.getPartitionKey()
-                    : event.getAggregateId();
+                // Partition key strategy: composite key using userId + aggregateId salt.
+                // This distributes a single high-volume user's events across multiple
+                // partitions to prevent hot partition issues, while still maintaining
+                // per-user affinity (same salt bucket → same partition).
+                // Format: "userId:saltBucket" where saltBucket = hash(aggregateId) % saltFactor
+                String partitionKey = buildCompositePartitionKey(
+                    event.getPartitionKey(), event.getAggregateId()
+                );
 
                 ProducerRecord<String, String> record = new ProducerRecord<>(
                     event.getEventType(),
@@ -175,5 +179,27 @@ public class OutboxPublisherService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Failed to serialize outbox payload for type=" + eventType, e);
         }
+    }
+
+    /**
+     * Builds a composite partition key: "userId:saltBucket".
+     *
+     * The salt bucket is derived from the aggregateId (paymentId) hash modulo the
+     * salt factor. This distributes events for a single heavy user across multiple
+     * partitions while keeping the same user's events within a bounded set of partitions.
+     *
+     * Trade-off: strict per-user ordering is relaxed (events may span N partitions
+     * where N = saltFactor), but hot partition skew is eliminated. For fraud scoring
+     * and velocity tracking, Redis-backed checks handle cross-partition aggregation.
+     */
+    private String buildCompositePartitionKey(String partitionKey, String aggregateId) {
+        if (partitionKey == null || partitionKey.isBlank()) {
+            return aggregateId;
+        }
+        if (aggregateId == null || aggregateId.isBlank() || partitionSaltFactor <= 1) {
+            return partitionKey;
+        }
+        int saltBucket = Math.abs(aggregateId.hashCode() % partitionSaltFactor);
+        return partitionKey + ":" + saltBucket;
     }
 }

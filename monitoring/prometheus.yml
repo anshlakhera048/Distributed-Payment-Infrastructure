@@ -6,10 +6,15 @@ scrape_configs:
   - job_name: "payment-service"
     metrics_path: /actuator/prometheus
     static_configs:
-      # payment-service runs as a Docker container; Prometheus reaches it via
-      # the compose network hostname.  If running payment-service on the host
-      # instead, replace with host.docker.internal:8080
       - targets: ["payment-service:8080"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  - job_name: "api-gateway"
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["api-gateway:8090"]
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance

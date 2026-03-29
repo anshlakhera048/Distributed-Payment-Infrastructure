@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY main.py feature_engineering.py feature_store.py model_manager.py ./
 
 EXPOSE 8000
 

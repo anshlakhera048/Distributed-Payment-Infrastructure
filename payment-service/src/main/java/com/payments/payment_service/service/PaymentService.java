@@ -6,6 +6,7 @@ import com.payments.payment_service.dto.PaymentEvent;
 import com.payments.payment_service.dto.PaymentResponse;
 import com.payments.payment_service.entity.Payment;
 import com.payments.payment_service.entity.PaymentStatus;
+import com.payments.payment_service.exception.InsufficientBalanceException;
 import com.payments.payment_service.exception.PaymentNotFoundException;
 import com.payments.payment_service.metrics.PaymentMetrics;
 import com.payments.payment_service.repository.PaymentRepository;
@@ -13,6 +14,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.dao.TransientDataAccessException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Recover;
 import org.springframework.retry.annotation.Retryable;
@@ -72,7 +75,8 @@ public class PaymentService {
 
     /**
      * Creates a new payment with idempotency guarantees.
-     * Uses SERIALIZABLE isolation on idempotency key lookup to prevent races.
+     * Uses READ_COMMITTED isolation with pessimistic locking on the idempotency
+     * key lookup to prevent races without the overhead of SERIALIZABLE.
      */
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public PaymentResponse createPayment(CreatePaymentRequest req, String idempotencyKey) {
@@ -233,33 +237,52 @@ public class PaymentService {
             // means the payment is never marked SUCCESS and no outbox event is written.
             // Ordering: ledger write → verify invariant → THEN set status.
             // This prevents a SUCCESS status being persisted without a balanced ledger.
-            ledgerService.recordPayment(
-                paymentId,
-                payment.getUserId().toString(),
-                payment.getMerchantId().toString(),
-                payment.getAmount(),
-                payment.getCurrency(),
-                correlationId
-            );
+            try {
+                ledgerService.recordPayment(
+                    paymentId,
+                    payment.getUserId().toString(),
+                    payment.getMerchantId().toString(),
+                    payment.getAmount(),
+                    payment.getCurrency(),
+                    correlationId
+                );
 
-            // Explicit pre-status verification: confirms the ledger write succeeded
-            // and the invariant holds before we commit the SUCCESS status.
-            ledgerService.verifyLedgerBalance(paymentId, payment.getAmount());
+                // Explicit pre-status verification: confirms the ledger write succeeded
+                // and the invariant holds before we commit the SUCCESS status.
+                ledgerService.verifyLedgerBalance(paymentId, payment.getAmount());
 
-            payment.setStatus(PaymentStatus.SUCCESS);
-            log.info("Payment {} marked SUCCESS after ledger verification. FraudScore={} Fallback={}",
-                paymentId, fraudCheck.getScore(), fraudCheck.isFallback());
+                payment.setStatus(PaymentStatus.SUCCESS);
+                log.info("Payment {} marked SUCCESS after ledger verification. FraudScore={} Fallback={}",
+                    paymentId, fraudCheck.getScore(), fraudCheck.isFallback());
 
-            outboxPublisherService.createOutboxEvent(
-                "payment.processed",
-                paymentId.toString(),
-                payment.getUserId().toString(),
-                buildPaymentEvent(payment, "payment.processed"),
-                correlationId,
-                payment.getTraceId()
-            );
+                outboxPublisherService.createOutboxEvent(
+                    "payment.processed",
+                    paymentId.toString(),
+                    payment.getUserId().toString(),
+                    buildPaymentEvent(payment, "payment.processed"),
+                    correlationId,
+                    payment.getTraceId()
+                );
 
-            paymentMetrics.recordPaymentProcessed(payment.getCurrency(), "SUCCESS");
+                paymentMetrics.recordPaymentProcessed(payment.getCurrency(), "SUCCESS");
+
+            } catch (InsufficientBalanceException e) {
+                payment.setStatus(PaymentStatus.FAILED);
+                payment.setFailureReason("INSUFFICIENT_BALANCE: " + e.getMessage());
+                log.warn("Payment {} FAILED due to insufficient balance. UserId={} Amount={} {}",
+                    paymentId, payment.getUserId(), payment.getAmount(), payment.getCurrency());
+
+                outboxPublisherService.createOutboxEvent(
+                    "payment.failed",
+                    paymentId.toString(),
+                    payment.getUserId().toString(),
+                    buildPaymentEvent(payment, "payment.failed"),
+                    correlationId,
+                    payment.getTraceId()
+                );
+
+                paymentMetrics.recordPaymentProcessed(payment.getCurrency(), "FAILED");
+            }
         }
 
         paymentRepository.save(payment);
@@ -283,9 +306,23 @@ public class PaymentService {
     ) {
         log.error("Exhausted all retries for processPaymentResult paymentId={} eventId={}: {}",
             paymentId, eventId, ex.getMessage(), ex);
-        // Re-throw so the Kafka consumer error handler can route to DLQ
         throw new IllegalStateException(
             "DB transient failure processing eventId=" + eventId + " paymentId=" + paymentId, ex
+        );
+    }
+
+    @Recover
+    public void recoverProcessPaymentResultGeneric(
+        Exception ex,
+        UUID paymentId,
+        FraudCheckResponse fraudCheck,
+        String correlationId,
+        String eventId
+    ) {
+        log.error("Unrecoverable error in processPaymentResult paymentId={} eventId={}: {}",
+            paymentId, eventId, ex.getMessage(), ex);
+        throw new IllegalStateException(
+            "Processing failed for eventId=" + eventId + " paymentId=" + paymentId, ex
         );
     }
 
@@ -302,6 +339,21 @@ public class PaymentService {
                 paymentCacheService.cachePayment(payment);
                 return toPaymentResponse(payment);
             });
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PaymentResponse> listPayments(UUID userId, PaymentStatus status, Pageable pageable) {
+        Page<Payment> page;
+        if (userId != null && status != null) {
+            page = paymentRepository.findByUserIdAndStatus(userId, status, pageable);
+        } else if (userId != null) {
+            page = paymentRepository.findByUserId(userId, pageable);
+        } else if (status != null) {
+            page = paymentRepository.findByStatus(status, pageable);
+        } else {
+            page = paymentRepository.findAll(pageable);
+        }
+        return page.map(this::toPaymentResponse);
     }
 
     // -----------------------------------------------------------------------

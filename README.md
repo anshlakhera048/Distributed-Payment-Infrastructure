@@ -23,8 +23,8 @@ Run everything in Docker. No local Java/Python/Node needed.
 
 ```bash
 # From project root (payments-system/)
-docker-compose --profile full up -d          # Start all services (~2-4 min first build)
-docker-compose --profile full ps             # Verify healthy status (~60-90s)
+docker compose --profile app up -d --build   # Start all backend services (~2-4 min first build)
+docker compose ps                            # Verify healthy status (~60-90s)
 ```
 
 | # | Service | URL |
@@ -42,8 +42,8 @@ Frontend: `cd frontend && npm install && npm run dev` → http://localhost:5173
 
 To stop:
 ```bash
-docker-compose --profile full down            # Stop all, keep data
-docker-compose --profile full down -v         # Stop all + delete volumes (clean reset)
+docker compose --profile app down              # Stop all, keep data
+docker compose --profile app down -v           # Stop all + delete volumes (clean reset)
 ```
 
 ### Option B — Local Dev (hot-reload for app services)
@@ -54,7 +54,7 @@ Infrastructure runs in Docker, app services run locally for fast iteration.
 
 **Step 1 — Start infrastructure (one terminal, from project root):**
 ```bash
-docker-compose up -d                          # Starts only: postgres, redis, kafka, zookeeper, prometheus, grafana
+docker compose up -d                           # Starts only: postgres, redis, kafka, zookeeper, prometheus, grafana
 ```
 
 **Step 2 — Start Fraud Service (new terminal):**

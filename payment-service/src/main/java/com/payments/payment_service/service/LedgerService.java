@@ -6,16 +6,23 @@ import com.payments.payment_service.repository.LedgerEntryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import com.payments.payment_service.exception.InsufficientBalanceException;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Implements double-entry bookkeeping.
+ * Implements double-entry bookkeeping with account balance updates.
  *
  * Invariant (enforced after every recording):
  *   SUM(DEBIT entries for paymentId) == SUM(CREDIT entries for paymentId)
+ *
+ * Account balance updates:
+ *   - DEBIT: subtracts from payer's account (via AccountService with optimistic locking)
+ *   - CREDIT: adds to payee's account (via AccountService with optimistic locking)
+ *   - Both operations happen atomically within the same @Transactional boundary
+ *   - OptimisticLockException on concurrent updates triggers retry at the caller
  *
  * All writes happen inside the caller's @Transactional boundary.
  * Any invariant violation triggers an exception which rolls back the entire
@@ -27,9 +34,11 @@ public class LedgerService {
     private static final Logger log = LoggerFactory.getLogger(LedgerService.class);
 
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final AccountService accountService;
 
-    public LedgerService(LedgerEntryRepository ledgerEntryRepository) {
+    public LedgerService(LedgerEntryRepository ledgerEntryRepository, AccountService accountService) {
         this.ledgerEntryRepository = ledgerEntryRepository;
+        this.accountService = accountService;
     }
 
     /**
@@ -44,7 +53,7 @@ public class LedgerService {
      * @param currency      ISO 4217 currency code
      * @param correlationId correlation ID for tracing
      */
-    @Transactional
+    @Transactional(noRollbackFor = InsufficientBalanceException.class)
     public void recordPayment(
         UUID paymentId,
         String payerId,
@@ -69,7 +78,12 @@ public class LedgerService {
 
         validateInvariant(paymentId, amount);
 
-        log.info("Recorded double-entry for paymentId={} amount={} {}", paymentId, amount, currency);
+        // Update account balances atomically (optimistic locking via @Version)
+        accountService.debit(payerId, currency, amount);
+        accountService.credit(payeeId, currency, amount);
+
+        log.info("Recorded double-entry for paymentId={} amount={} {} — account balances updated",
+            paymentId, amount, currency);
     }
 
     /**

@@ -6,10 +6,14 @@
  *   2. GET  /payments/:id — poll payment status
  *   3. Idempotency replay — same key twice → must return identical response
  *   4. Rate limiting verification — burst requests → expect some 429s
+ *   5. Sustained throughput — 1000+ TPS stress test
+ *   6. Backpressure validation — system degrades gracefully under load
  *
  * Run:
- *   k6 run payment-load-test.js
- *   k6 run --vus 50 --duration 60s payment-load-test.js
+ *   k6 run payment-load-test.js                                           # default profile
+ *   k6 run --env PROFILE=stress payment-load-test.js                      # 1000+ TPS stress
+ *   k6 run --env PROFILE=soak payment-load-test.js                        # 30min soak test
+ *   k6 run --vus 50 --duration 60s payment-load-test.js                   # custom VUs
  *   k6 run --env BASE_URL=http://localhost:8090/api payment-load-test.js  # via gateway
  *
  * Prerequisites:
@@ -29,25 +33,56 @@ import { uuidv4 } from "https://jslib.k6.io/k6-utils/1.4.0/index.js";
 
 const BASE_URL   = __ENV.BASE_URL   || "http://localhost:8080";
 const JWT_TOKEN  = __ENV.JWT_TOKEN  || "";   // Required when testing via API gateway
+const PROFILE    = __ENV.PROFILE    || "default";  // default | stress | soak | spike
 
-/** Load profile stages */
+/** Load profiles — select via PROFILE env var */
+const PROFILES = {
+  default: {
+    stages: [
+      { duration: "30s", target: 10  },
+      { duration: "60s", target: 50  },
+      { duration: "30s", target: 100 },
+      { duration: "30s", target: 10  },
+      { duration: "10s", target: 0   },
+    ],
+  },
+  stress: {
+    stages: [
+      { duration: "30s",  target: 100  },  // Ramp to 100 VUs
+      { duration: "60s",  target: 500  },  // Ramp to 500 VUs
+      { duration: "120s", target: 1000 },  // Sustained 1000+ TPS
+      { duration: "60s",  target: 1500 },  // Peak stress
+      { duration: "30s",  target: 500  },  // Scale back
+      { duration: "30s",  target: 0    },  // Cool down
+    ],
+  },
+  soak: {
+    stages: [
+      { duration: "2m",  target: 200 },  // Ramp up
+      { duration: "30m", target: 200 },  // Sustained 30 minutes
+      { duration: "2m",  target: 0   },  // Cool down
+    ],
+  },
+  spike: {
+    stages: [
+      { duration: "10s", target: 10   },  // Baseline
+      { duration: "5s",  target: 2000 },  // Instant spike
+      { duration: "30s", target: 2000 },  // Hold spike
+      { duration: "5s",  target: 10   },  // Instant drop
+      { duration: "30s", target: 10   },  // Recovery observation
+      { duration: "10s", target: 0    },  // Complete
+    ],
+  },
+};
+
 export const options = {
-  stages: [
-    { duration: "30s", target: 10  },  // Ramp-up to 10 VUs
-    { duration: "60s", target: 50  },  // Sustained load
-    { duration: "30s", target: 100 },  // Stress spike
-    { duration: "30s", target: 10  },  // Scale back down
-    { duration: "10s", target: 0   },  // Cool down
-  ],
+  stages: PROFILES[PROFILE]?.stages || PROFILES.default.stages,
   thresholds: {
-    // p95 of POST /payments must be < 500ms
-    "payment_create_duration": ["p(95)<500"],
-    // p95 of GET /payments/:id must be < 200ms (cache hit expected)
-    "payment_get_duration": ["p(95)<200"],
-    // Error rate must stay below 1% excluding expected 429s
-    "http_req_failed": ["rate<0.01"],
-    // Idempotency key replays must always return 200+
+    "payment_create_duration": ["p(95)<500", "p(99)<1000"],
+    "payment_get_duration": ["p(95)<200", "p(99)<500"],
+    "http_req_failed": ["rate<0.05"],  // Allow higher error rate for stress tests
     "idempotency_check_pass": ["rate>0.99"],
+    "payment_create_throughput": ["count>100"],
   },
 };
 
@@ -60,6 +95,8 @@ const paymentGetDuration     = new Trend("payment_get_duration");
 const idempotencyCheckPass   = new Rate("idempotency_check_pass");
 const rateLimitHits          = new Counter("rate_limit_hits");
 const fraudBlockedCount      = new Counter("fraud_blocked_count");
+const createThroughput       = new Counter("payment_create_throughput");
+const backpressureHits       = new Counter("backpressure_hits");
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -127,8 +164,11 @@ export default function () {
 
     if (res.status === 429) {
       rateLimitHits.add(1);
+      backpressureHits.add(1);
       return; // Skip further checks for rate-limited requests
     }
+
+    createThroughput.add(1);
 
     const created = check(res, {
       "create: status 201":           (r) => r.status === 201,

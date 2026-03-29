@@ -1,7 +1,7 @@
 """
 Fraud Detection Microservice
 ============================
-Two-stage fraud pipeline:
+Two-stage fraud pipeline with ML model versioning and feature engineering.
 
 1. Rule-based checks (fast, deterministic):
    - Velocity: >10 transactions in 60 seconds for the same user
@@ -9,22 +9,25 @@ Two-stage fraud pipeline:
    - Currency allowlist
 
 2. ML-based scoring (sklearn IsolationForest):
-   - Features: amount, is_high_value, currency_risk_score
-   - Trained on synthetic normal/fraud patterns at startup
-   - Score 0.0 = clean, 1.0 = highly suspicious
+   - v1: 3 features (amount, is_high_value, currency_risk) — backward compatible
+   - v2: 11 features (full feature engineering pipeline) — enhanced accuracy
+   - Model versioning via ModelManager with hot-reload support
+   - Feature extraction via FeatureExtractor with FeatureStore enrichment
 
 Transport modes:
    - HTTP API (POST /score): synchronous, used for direct integration / testing
    - Kafka pipeline: async, production-grade decoupled pipeline
        fraud.request  →  [this service]  →  fraud.result
 
-Circuit breaker pattern: if both rule-engine and ML agree → fraud
-If ML is uncertain but rules are clean → allow with elevated score
+Architecture:
+   - FeatureStore: Redis-backed real-time feature computation
+   - FeatureExtractor: Transforms raw transaction → FeatureVector
+   - ModelManager: Versioned model lifecycle (train, score, hot-reload)
 
 Observability:
    - Prometheus metrics exposed at /metrics
    - Structured JSON logging
-   - /health endpoint for Docker healthcheck
+   - /health, /admin/model endpoints
 """
 
 import json
@@ -42,6 +45,10 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from pydantic import BaseModel
 from sklearn.ensemble import IsolationForest
+
+from feature_engineering import FeatureExtractor
+from feature_store import FeatureStore
+from model_manager import ModelManager
 
 # ---------------------------------------------------------------------------
 # Logging (structured JSON-like output)
@@ -97,56 +104,29 @@ def get_redis() -> Optional[redis.Redis]:
 _velocity_store: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
 # ---------------------------------------------------------------------------
-# ML Model — IsolationForest trained on synthetic data at startup
+# Currency risk + ML Model initialization
 # ---------------------------------------------------------------------------
 
-def _train_model() -> IsolationForest:
-    """
-    Trains an IsolationForest on synthetic transaction data.
-    In production this would load a pre-trained model from object storage (S3/GCS).
-    Features: [amount, is_high_value, currency_risk]
-    """
-    rng = np.random.default_rng(42)
-
-    # Normal transactions (90%)
-    normal_amounts = rng.lognormal(mean=4.0, sigma=1.5, size=900)  # ~$55 median
-    normal_high_value = (normal_amounts > 5000).astype(float)
-    normal_currency_risk = rng.uniform(0.0, 0.2, size=900)
-    normal = np.column_stack([normal_amounts, normal_high_value, normal_currency_risk])
-
-    # Fraudulent transactions (10%) — extreme amounts, high risk currencies
-    fraud_amounts = rng.uniform(9000, 50000, size=100)
-    fraud_high_value = np.ones(100)
-    fraud_currency_risk = rng.uniform(0.7, 1.0, size=100)
-    fraud = np.column_stack([fraud_amounts, fraud_high_value, fraud_currency_risk])
-
-    X = np.vstack([normal, fraud])
-
-    model = IsolationForest(
-        n_estimators=100,
-        contamination=0.1,
-        random_state=42,
-        n_jobs=-1,
-    )
-    model.fit(X)
-    logger.info("IsolationForest model trained. Features: [amount, is_high_value, currency_risk]")
-    return model
-
-
-# Currency risk scores (0.0 = low risk, 1.0 = high risk)
 CURRENCY_RISK: dict[str, float] = {
-    "USD": 0.05,
-    "EUR": 0.05,
-    "GBP": 0.05,
-    "INR": 0.10,
-    "JPY": 0.10,
-    "CAD": 0.05,
-    "AUD": 0.08,
+    "USD": 0.05, "EUR": 0.05, "GBP": 0.05,
+    "INR": 0.10, "JPY": 0.10, "CAD": 0.05, "AUD": 0.08,
 }
 ALLOWED_CURRENCIES = set(CURRENCY_RISK.keys())
-DEFAULT_CURRENCY_RISK = 0.9  # Any unlisted currency = high risk
+DEFAULT_CURRENCY_RISK = 0.9
 
-MODEL: IsolationForest = _train_model()
+MODEL_MANAGER = ModelManager()
+
+_feature_store: Optional[FeatureStore] = None
+_feature_extractor: Optional[FeatureExtractor] = None
+
+def _init_feature_pipeline():
+    global _feature_store, _feature_extractor
+    r = get_redis()
+    _feature_store = FeatureStore(redis_client=r)
+    _feature_extractor = FeatureExtractor(feature_store=_feature_store)
+    logger.info("Feature pipeline initialized (Redis=%s)", "connected" if r else "in-process fallback")
+
+_init_feature_pipeline()
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -203,20 +183,22 @@ def check_velocity(user_id: str) -> tuple[bool, int]:
 # ML scoring
 # ---------------------------------------------------------------------------
 
-def ml_score(amount: float, currency: str) -> float:
-    """Returns a fraud probability [0.0, 1.0]."""
-    is_high_value = 1.0 if amount > 5000 else 0.0
-    currency_risk = CURRENCY_RISK.get(currency, DEFAULT_CURRENCY_RISK)
-    features = np.array([[amount, is_high_value, currency_risk]])
+def ml_score(amount: float, currency: str, user_id: str = "", merchant_id: str = "") -> float:
+    """Returns a fraud probability [0.0, 1.0] using versioned model and feature pipeline."""
+    if _feature_extractor is not None:
+        fv = _feature_extractor.extract(user_id, merchant_id, amount, currency)
+        # Use full feature array for v2 model, basic for v1
+        if MODEL_MANAGER.feature_count >= 11:
+            features = fv.to_array()
+        else:
+            features = fv.to_basic_array()
+    else:
+        # Fallback: basic 3-feature vector
+        is_high_value = 1.0 if amount > 5000 else 0.0
+        currency_risk = CURRENCY_RISK.get(currency, DEFAULT_CURRENCY_RISK)
+        features = np.array([[amount, is_high_value, currency_risk]])
 
-    # IsolationForest returns -1 (outlier) or 1 (inlier)
-    # decision_function returns negative values for outliers
-    raw_score = MODEL.decision_function(features)[0]
-
-    # Normalise to [0, 1]: more negative raw_score → higher fraud probability
-    # raw_score range is approximately [-0.5, 0.5]
-    normalised = max(0.0, min(1.0, 0.5 - raw_score))
-    return round(normalised, 4)
+    return MODEL_MANAGER.score(features)
 
 # ---------------------------------------------------------------------------
 # Main scoring endpoint
@@ -270,7 +252,7 @@ async def score_transaction(txn: Transaction, request: Request):
     # ----------------------------------------------------------------
     # Stage 2: ML-based scoring
     # ----------------------------------------------------------------
-    score = ml_score(txn.amount, txn.currency)
+    score = ml_score(txn.amount, txn.currency, txn.user_id)
     FRAUD_SCORE.observe(score)
 
     ml_fraud = score >= 0.75
@@ -299,9 +281,49 @@ async def score_transaction(txn: Transaction, request: Request):
 # Health + Metrics
 # ---------------------------------------------------------------------------
 
+@app.get("/")
+async def root():
+    return {
+        "service": "fraud-detection-service",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": ["/score", "/health", "/metrics", "/admin/model"],
+    }
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": "IsolationForest", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "model": MODEL_MANAGER.version,
+        "feature_count": MODEL_MANAGER.feature_count,
+        "feature_store": "redis" if (_feature_store and _feature_store._redis) else "in-process",
+    }
+
+# ---------------------------------------------------------------------------
+# Admin endpoints — protected by API key
+# ---------------------------------------------------------------------------
+
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "changeme-admin-key-for-dev")
+
+def _verify_admin_key(request: Request) -> None:
+    """Validates the X-Admin-Key header against the configured admin API key."""
+    key = request.headers.get("X-Admin-Key", "")
+    if not key or key != ADMIN_API_KEY:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Invalid or missing admin API key")
+
+@app.get("/admin/model")
+async def model_info(request: Request):
+    """Returns current model metadata for observability."""
+    _verify_admin_key(request)
+    return MODEL_MANAGER.get_metadata()
+
+@app.post("/admin/model/train-v2")
+async def train_v2(request: Request):
+    """Triggers training of the v2 model with 11-feature pipeline."""
+    _verify_admin_key(request)
+    MODEL_MANAGER.train_v2_model()
+    return {"status": "ok", "model": MODEL_MANAGER.get_metadata()}
 
 @app.get("/metrics")
 async def metrics():
@@ -373,7 +395,7 @@ def _run_fraud_decision(
                     fallback=False, correlation_id=correlation_id)
 
     # Stage 2: ML
-    score = ml_score(amount, currency)
+    score = ml_score(amount, currency, user_id)
     ml_fraud = bool(score >= 0.75)
     return dict(event_id=event_id, payment_id=payment_id,
                 fraud=ml_fraud,

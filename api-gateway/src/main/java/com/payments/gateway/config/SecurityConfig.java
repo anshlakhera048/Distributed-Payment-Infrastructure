@@ -40,8 +40,8 @@ public class SecurityConfig {
         return http
             .csrf(ServerHttpSecurity.CsrfSpec::disable)
             .authorizeExchange(exchanges -> exchanges
-                // Actuator health probe — accessible without authentication
-                .pathMatchers("/actuator/health", "/actuator/info").permitAll()
+                // Actuator probes — accessible without authentication
+                .pathMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
                 // All other paths require a valid JWT
                 .anyExchange().authenticated()
             )

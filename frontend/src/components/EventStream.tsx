@@ -3,13 +3,17 @@ import type { PaymentEvent } from '../types';
 const eventTypeColors: Record<string, string> = {
   'payment.created': 'border-blue-500',
   'fraud.result': 'border-purple-500',
+  'fraud.alerts': 'border-red-500',
   'payment.processed': 'border-emerald-500',
+  'payment.failed': 'border-red-400',
 };
 
 const eventTypeLabels: Record<string, string> = {
   'payment.created': 'CREATED',
   'fraud.result': 'FRAUD CHECK',
+  'fraud.alerts': 'FRAUD ALERT',
   'payment.processed': 'PROCESSED',
+  'payment.failed': 'FAILED',
 };
 
 function formatTime(iso: string): string {

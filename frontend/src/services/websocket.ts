@@ -1,6 +1,9 @@
 type MessageHandler = (data: unknown) => void;
 
-const WS_URL = 'ws://localhost:8080/ws/payments';
+// Use relative WebSocket URL so it goes through the Vite proxy (dev) or
+// the same origin (production behind nginx/gateway)
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws/payments`;
 const RECONNECT_DELAY_MS = 3000;
 const PING_INTERVAL_MS = 25000;
 

@@ -33,6 +33,14 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.NOT_FOUND, "PAYMENT_NOT_FOUND", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(InsufficientBalanceException.class)
+    public ResponseEntity<ErrorResponse> handleInsufficientBalance(
+        InsufficientBalanceException ex, HttpServletRequest request
+    ) {
+        log.warn("Insufficient balance: ownerId={} currency={}", ex.getAccountOwnerId(), ex.getCurrency());
+        return build(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_BALANCE", ex.getMessage(), request);
+    }
+
     @ExceptionHandler(RateLimitExceededException.class)
     public ResponseEntity<ErrorResponse> handleRateLimit(
         RateLimitExceededException ex, HttpServletRequest request
