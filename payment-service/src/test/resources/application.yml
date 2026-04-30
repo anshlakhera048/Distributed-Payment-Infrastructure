@@ -47,6 +47,13 @@ app:
   reconciliation:
     cron: "0 0 3 * * *"
     stale-payment-threshold-minutes: 10
+  backpressure:
+    poll-interval-ms: 60000
+    warning-threshold: 1000
+    critical-threshold: 5000
+    severe-threshold: 10000
+  kafka:
+    partition-salt-factor: 3
 
 resilience4j:
   circuitbreaker:

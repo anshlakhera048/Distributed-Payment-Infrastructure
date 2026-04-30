@@ -18,8 +18,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Sliding window rate limiter using Redis + Lua script.
- * Token bucket approach: each key is allowed N requests per 60-second window.
+ * Fixed-window rate limiter using Redis + Lua script.
+ * Each key is allowed N requests per 60-second tumbling window.
  * Lua script ensures atomicity of the check-and-increment operation.
  *
  * DEFENSIVE FALLBACK:
@@ -48,7 +48,7 @@ public class RateLimiterService {
     private static final int    FALLBACK_ENTRY_TTL_MINUTES = 2;   // 2 × window = safe expiry
 
     /**
-     * Atomic Lua script for sliding window counter increment.
+     * Atomic Lua script for fixed-window counter increment.
      * Returns 1 if under limit (request allowed), 0 if over limit.
      */
     private static final String RATE_LIMIT_SCRIPT =

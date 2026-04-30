@@ -11,7 +11,7 @@ export interface PaymentEvent {
   currency: string;
   status: string;
   idempotencyKey: string;
-  description: string;
+  description: string | null;
   createdAt: string;
   eventTimestamp: string;
 }
@@ -24,7 +24,7 @@ export interface PaymentResponse {
   currency: string;
   status: 'PENDING' | 'SUCCESS' | 'FAILED' | 'FRAUD_REJECTED';
   idempotencyKey: string;
-  description: string;
+  description: string | null;
   createdAt: string;
 }
 

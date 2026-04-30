@@ -53,7 +53,7 @@ public class PaymentMetrics {
             .tag("result", result)
             .register(meterRegistry)
             .increment();
-        pendingPayments.decrementAndGet();
+        pendingPayments.updateAndGet(current -> Math.max(0, current - 1));
     }
 
     public void recordFraudDetected(String reason) {
